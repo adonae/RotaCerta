@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Painel da loja · RotaCerta</title>
+  <meta name="description" content="Cadastre os pedidos do dia, calcule a melhor rota e envie os links de acompanhamento.">
+  <meta name="theme-color" content="#0b1220">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f0522b'/%3E%3Cpath d='M8 24c8 0 10-16 16-16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='8' cy='24' r='2.5' fill='white'/%3E%3Ccircle cx='24' cy='8' r='2.5' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="/assets/app.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+  <script type="module" src="/assets/painel.js"></script>
+</head>
+<body>
+  <section class="login-page" id="login-view">
+    <div class="login-card">
+      <a class="brand" href="/" aria-label="RotaCerta — início">
+        <span class="brand__mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M5 19c6 0 8-14 14-14"/>
+            <circle cx="5" cy="19" r="2.2" fill="currentColor" stroke="none"/>
+            <circle cx="19" cy="5" r="2.2" fill="currentColor" stroke="none"/>
+          </svg>
+        </span>
+        <span>
+          <span class="brand__name">RotaCerta</span>
+          <span class="brand__tag">controle de entregas</span>
+        </span>
+      </a>
+      <h1>Área da loja</h1>
+      <p class="page-sub">Entre com a senha para gerenciar as entregas do dia.</p>
+      <form id="login-form" class="stack" novalidate>
+        <div class="field">
+          <label for="login-password">Senha do painel</label>
+          <input class="input" id="login-password" name="password" type="password" autocomplete="current-password" placeholder="Digite sua senha" required>
+        </div>
+        <p class="error" id="login-error" style="font-size:12.5px;color:var(--red);min-height:18px"></p>
+        <button class="btn btn--primary btn--lg btn--block" id="login-btn" type="submit">Entrar</button>
+      </form>
+      <p class="login-foot">A senha pode ser alterada nas configurações do painel.</p>
+    </div>
+  </section>
+
+  <div class="panel hidden" id="app-view">
+    <aside class="sidebar">
+      <a class="brand brand--light" href="#/rotas" aria-label="RotaCerta — rotas">
+        <span class="brand__mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M5 19c6 0 8-14 14-14"/>
+            <circle cx="5" cy="19" r="2.2" fill="currentColor" stroke="none"/>
+            <circle cx="19" cy="5" r="2.2" fill="currentColor" stroke="none"/>
+          </svg>
+        </span>
+        <span>
+          <span class="brand__name">RotaCerta</span>
+          <span class="brand__tag">painel da loja</span>
+        </span>
+      </a>
+
+      <nav class="side-nav" aria-label="Menu principal">
+        <button class="side-link is-active" type="button" data-action="go-routes">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M5 19c6 0 8-14 14-14"/><circle cx="5" cy="19" r="2.2" fill="currentColor" stroke="none"/><circle cx="19" cy="5" r="2.2" fill="currentColor" stroke="none"/>
+          </svg>
+          Rotas de entrega
+        </button>
+        <button class="side-link" type="button" data-action="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>
+          </svg>
+          Configurações
+        </button>
+      </nav>
+
+      <div class="side-spacer"></div>
+
+      <div class="side-store">
+        <span class="side-store__label">Loja</span>
+        <span class="side-store__name" id="side-store-name">Minha Loja</span>
+        <div class="side-store__addr" id="side-store-addr"></div>
+      </div>
+
+      <div class="side-foot">
+        <button class="side-action" type="button" data-action="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>
+          </svg>
+          Preferências
+        </button>
+        <button class="side-action" type="button" data-action="logout">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5M21 12H9"/>
+          </svg>
+          Sair do painel
+        </button>
+      </div>
+    </aside>
+
+    <div class="panel-main">
+      <header class="panel-top">
+        <a class="brand panel-top__mobile-brand" href="#/rotas">
+          <span class="brand__mark brand__mark--sm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <path d="M5 19c6 0 8-14 14-14"/><circle cx="5" cy="19" r="2.2" fill="currentColor" stroke="none"/><circle cx="19" cy="5" r="2.2" fill="currentColor" stroke="none"/>
+            </svg>
+          </span>
+          <span class="brand__name">RotaCerta</span>
+        </a>
+        <div class="panel-top__title" id="panel-top-title"><strong>Painel da loja</strong></div>
+        <div class="spacer"></div>
+        <button class="avatar" type="button" id="top-avatar" data-action="settings" aria-label="Abrir configurações">M</button>
+      </header>
+
+      <main class="page" id="panel-page"></main>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <noscript>
+    <p style="padding:24px;text-align:center">Ative o JavaScript para usar o RotaCerta.</p>
+  </noscript>
+</body>
+</html>

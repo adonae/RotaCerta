@@ -1,0 +1,20 @@
+{
+  "name": "rotacerta",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "RotaCerta — entregas com rota otimizada, link do motoboy e acompanhamento ao vivo para o cliente.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:create": "wrangler d1 create rotacerta",
+    "db:migrate": "wrangler d1 migrations apply DB --local",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "test:e2e": "node scripts/e2e.mjs",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.65.0",
+    "wrangler": "^4.161.0"
+  }
+}

@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RotaCerta · Controle de entregas</title>
+  <meta name="description" content="Cadastre entregas, acompanhe o status, veja sua posição no mapa e compartilhe um link de acompanhamento com o cliente.">
+  <meta name="theme-color" content="#0b1220">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23f0522b'/%3E%3Cpath d='M8 24c8 0 10-16 16-16' fill='none' stroke='white' stroke-width='2.5' stroke-linecap='round'/%3E%3Ccircle cx='8' cy='24' r='2.5' fill='white'/%3E%3Ccircle cx='24' cy='8' r='2.5' fill='white'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="assets/styles.css">
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <a class="brand" href="#/entregas" aria-label="RotaCerta — início">
+        <span class="brand__mark">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M5 19c6 0 8-14 14-14"/>
+            <circle cx="5" cy="19" r="2.2" fill="currentColor" stroke="none"/>
+            <circle cx="19" cy="5" r="2.2" fill="currentColor" stroke="none"/>
+          </svg>
+        </span>
+        <span>
+          <span class="brand__name">RotaCerta</span>
+          <span class="brand__tag">controle de entregas</span>
+        </span>
+      </a>
+
+      <nav class="side-nav" aria-label="Menu principal">
+        <a class="side-link" data-nav="entregas" href="#/entregas">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+            <path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>
+          </svg>
+          Entregas
+        </a>
+        <a class="side-link" data-nav="nova" href="#/nova">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M12 5v14M5 12h14"/>
+          </svg>
+          Nova entrega
+        </a>
+        <a class="side-link" data-nav="mapa" href="#/mapa">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/>
+            <circle cx="12" cy="10" r="3"/>
+          </svg>
+          Mapa ao vivo
+        </a>
+      </nav>
+
+      <div class="side-spacer"></div>
+
+      <div class="side-note">
+        <div class="side-note__icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 7 12 3 4 7v10l8 4 8-4V7Z"/><path d="M4 7l8 4 8-4M12 21V11"/>
+          </svg>
+        </div>
+        <p><strong>Dados neste aparelho</strong>Exporte um backup de vez em quando para não perder nada.</p>
+        <button class="side-note__btn" type="button" data-export>Exportar backup</button>
+      </div>
+
+      <button class="profile-btn" type="button" data-open-settings aria-label="Abrir configurações">
+        <span class="avatar" id="profile-initial">M</span>
+        <span class="profile-btn__text">
+          <strong id="profile-name">Motoboy</strong>
+          <small>Configurações</small>
+        </span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/>
+        </svg>
+      </button>
+    </aside>
+
+    <div class="main-wrap">
+      <header class="topbar">
+        <a class="topbar__brand" href="#/entregas">
+          <span class="brand__mark brand__mark--sm">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+              <path d="M5 19c6 0 8-14 14-14"/>
+              <circle cx="5" cy="19" r="2.2" fill="currentColor" stroke="none"/>
+              <circle cx="19" cy="5" r="2.2" fill="currentColor" stroke="none"/>
+            </svg>
+          </span>
+          <span class="brand__name">RotaCerta</span>
+        </a>
+        <button class="avatar avatar--btn" type="button" id="topbar-initial" data-open-settings aria-label="Configurações">M</button>
+      </header>
+
+      <main class="main">
+        <!-- ENTREGAS -->
+        <section class="page is-active" data-page="entregas">
+          <header class="page-head">
+            <div>
+              <p class="eyebrow" id="today-label">Hoje</p>
+              <h1>Suas entregas</h1>
+              <p class="page-head__sub">Acompanhe cada etapa e mantenha o cliente informado.</p>
+            </div>
+            <a class="btn btn--primary" href="#/nova">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              Nova entrega
+            </a>
+          </header>
+
+          <div class="stats" id="stats"></div>
+
+          <div class="toolbar">
+            <label class="search" for="search-input">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="11" cy="11" r="7"/><path d="m20 20-3.2-3.2"/>
+              </svg>
+              <input id="search-input" type="search" placeholder="Buscar cliente, endereço ou código" autocomplete="off">
+            </label>
+            <div class="chips" id="filters" role="tablist" aria-label="Filtrar entregas"></div>
+          </div>
+
+          <div class="orders" id="orders"></div>
+        </section>
+
+        <!-- NOVA ENTREGA -->
+        <section class="page" data-page="nova">
+          <header class="page-head">
+            <div>
+              <p class="eyebrow">Nova entrega</p>
+              <h1>Cadastrar entrega</h1>
+              <p class="page-head__sub">Preencha os dados da coleta e do destino.</p>
+            </div>
+          </header>
+
+          <form class="card form" id="form-nova" novalidate>
+            <div class="form__grid">
+              <div class="field">
+                <label for="cliente">Nome do cliente <span>*</span></label>
+                <input id="cliente" name="cliente" type="text" placeholder="Ex.: Ana Souza" autocomplete="name">
+                <p class="error" data-error="cliente"></p>
+              </div>
+              <div class="field">
+                <label for="telefone">Telefone / WhatsApp</label>
+                <input id="telefone" name="telefone" type="tel" inputmode="tel" placeholder="(11) 91234-5678" autocomplete="tel">
+                <p class="error" data-error="telefone"></p>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="coleta">Local de coleta</label>
+              <input id="coleta" name="coleta" type="text" placeholder="Ex.: Restaurante Bella Vista — Rua Augusta, 1200">
+              <p class="hint">Onde você retira o pedido. Opcional.</p>
+              <p class="error" data-error="coleta"></p>
+            </div>
+
+            <div class="field">
+              <label for="destino">Endereço de entrega <span>*</span></label>
+              <input id="destino" name="destino" type="text" placeholder="Rua, número, bairro, cidade">
+              <p class="error" data-error="destino"></p>
+            </div>
+
+            <div class="form__grid">
+              <div class="field">
+                <label for="referencia">Ponto de referência</label>
+                <input id="referencia" name="referencia" type="text" placeholder="Ex.: portão azul, ao lado da padaria">
+                <p class="error" data-error="referencia"></p>
+              </div>
+              <div class="field">
+                <label for="observacao">Observações</label>
+                <input id="observacao" name="observacao" type="text" placeholder="Ex.: entregar na portaria">
+                <p class="error" data-error="observacao"></p>
+              </div>
+            </div>
+
+            <div class="form__foot">
+              <a class="btn btn--ghost" href="#/entregas">Cancelar</a>
+              <button class="btn btn--primary" type="submit">Criar entrega</button>
+            </div>
+          </form>
+
+          <p class="privacy-note">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>
+            </svg>
+            Os dados ficam salvos apenas neste navegador. Faça backup em Configurações.
+          </p>
+        </section>
+
+        <!-- MAPA -->
+        <section class="page" data-page="mapa">
+          <header class="page-head">
+            <div>
+              <p class="eyebrow">Rastreamento</p>
+              <h1>Mapa ao vivo</h1>
+              <p class="page-head__sub">Ative o GPS para acompanhar sua posição e enviá-la nas entregas.</p>
+            </div>
+            <button class="btn btn--primary" id="btn-track" type="button" data-gps="start">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>
+                <path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>
+              </svg>
+              Ativar rastreamento
+            </button>
+          </header>
+
+          <div class="map-layout">
+            <div class="map-card">
+              <div id="map" aria-label="Mapa das entregas"></div>
+              <div class="map-foot">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>
+                </svg>
+                Arraste para explorar. Sua posição é anexada automaticamente às entregas ativas.
+              </div>
+            </div>
+
+            <aside class="map-side">
+              <div class="card gps-card" id="gps-card"></div>
+
+              <div class="card active-card">
+                <div class="card__head">
+                  <h2>Em andamento</h2>
+                  <span class="badge" id="map-count">0</span>
+                </div>
+                <div class="mini-list" id="map-orders"></div>
+              </div>
+            </aside>
+          </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <nav class="bottom-nav" aria-label="Navegação principal">
+    <a class="bottom-link" data-nav="entregas" href="#/entregas">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/>
+        <path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>
+      </svg>
+      <span>Entregas</span>
+    </a>
+    <a class="bottom-link bottom-link--cta" data-nav="nova" href="#/nova">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+      <span>Nova</span>
+    </a>
+    <a class="bottom-link" data-nav="mapa" href="#/mapa">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>
+      </svg>
+      <span>Mapa</span>
+    </a>
+  </nav>
+
+  <div class="drawer" id="drawer" aria-hidden="true">
+    <div class="drawer__scrim" data-close-drawer></div>
+    <aside class="drawer__panel" id="drawer-panel" role="dialog" aria-modal="true" aria-label="Detalhes da entrega"></aside>
+  </div>
+
+  <div id="modal-root"></div>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <noscript>
+    <p style="padding:24px;text-align:center">Ative o JavaScript para usar o RotaCerta.</p>
+  </noscript>
+
+  <script type="module" src="assets/app.js"></script>
+</body>
+</html>
