@@ -174,7 +174,7 @@ function heroHtml(data) {
           </div>
           <div class="track-meta">
             <strong>${route.delivered ?? 0}</strong>
-            <span>entregues</span>
+            <span>concluídas</span>
           </div>
         </div>
       </section>`;

@@ -176,7 +176,7 @@ function render() {
 
       <div class="rider-progress">
         <div class="rider-progress__label">
-          <span>${delivered.length} de ${total} entregue${total === 1 ? '' : 's'}</span>
+          <span>${delivered.length} de ${total} parada${total === 1 ? '' : 's'} concluída${total === 1 ? '' : 's'}</span>
           <strong>${percent}%</strong>
         </div>
         <div class="progress">
@@ -239,9 +239,10 @@ function render() {
 }
 
 function stopCard(order, index, active, pending) {
+  const isBranch = order.kind === 'branch';
   const isActive = order.status === 'en_route';
   const isDelivered = order.status === 'delivered';
-  const blocked = Boolean(active && active.id !== order.id);
+  const blocked = Boolean(!isBranch && active && active.id !== order.id);
   const isNext = !active && pending[0]?.id === order.id;
   const cls = [
     'stop-card',
@@ -256,10 +257,10 @@ function stopCard(order, index, active, pending) {
       ? '<span class="stop-card__flag">Próxima parada</span>'
       : '';
 
-  const wa = order.phone
+  const wa = !isBranch && order.phone
     ? waLink(order.phone, `Olá, ${firstName(order.customer)}! Estou a caminho com sua entrega ${order.code}.`)
     : '';
-  const tel = order.phone ? telLink(order.phone) : '';
+  const tel = !isBranch && order.phone ? telLink(order.phone) : '';
 
   const links = [];
   links.push(`<a class="mini-link" href="${esc(mapsLink(order))}" target="_blank" rel="noopener">${icon('navigation')} Abrir no Maps</a>`);
@@ -267,7 +268,22 @@ function stopCard(order, index, active, pending) {
   if (tel) links.push(`<a class="mini-link" href="${esc(tel)}">${icon('phone')} Ligar</a>`);
 
   let actions;
-  if (isDelivered) {
+  if (isBranch) {
+    if (isDelivered) {
+      actions = `
+        <div class="stop-card__done">${icon('check')} Parada concluída${order.deliveredAt ? ` às ${esc(formatTime(order.deliveredAt))}` : ''}</div>
+        <div class="stop-card__link-row">
+          <button class="mini-link" type="button" data-action="undo" data-id="${esc(order.id)}">${icon('undo')} Desfazer parada</button>
+          ${links.join('')}
+        </div>`;
+    } else {
+      actions = `
+        <div class="stop-card__actions">
+          <button class="btn btn--success btn--block" type="button" data-action="deliver" data-id="${esc(order.id)}">${icon('check')} Concluir parada</button>
+        </div>
+        <div class="stop-card__link-row">${links.join('')}</div>`;
+    }
+  } else if (isDelivered) {
     actions = `
       <div class="stop-card__done">${icon('check')} Entregue${order.deliveredAt ? ` às ${esc(formatTime(order.deliveredAt))}` : ''}${order.hasPhoto ? ' · foto registrada' : ''}</div>
       <div class="stop-card__link-row">
@@ -301,6 +317,7 @@ function stopCard(order, index, active, pending) {
           <div class="stop-card__title">${esc(order.customer)}</div>
           <div class="stop-card__code">${esc(order.code)} · ${order.seq ?? index + 1}ª parada</div>
         </div>
+        ${isBranch ? '<span class="chip chip--ink"><span class="chip__dot"></span>Filial</span>' : ''}
         ${statusChipMini(order.status)}
       </div>
       <div class="stop-card__addr">
@@ -329,7 +346,7 @@ function finishedCard(delivered, total) {
     <div class="rider-finished">
       <div class="rider-finished__icon">${icon('check')}</div>
       <h2>Rota concluída!</h2>
-      <p>${total} entrega${total === 1 ? '' : 's'} realizada${total === 1 ? '' : 's'} com sucesso${duration ? ` em ${formatDuration(duration)}` : ''}.</p>
+      <p>${total} parada${total === 1 ? '' : 's'} concluída${total === 1 ? '' : 's'} com sucesso${duration ? ` em ${formatDuration(duration)}` : ''}.</p>
       <button class="btn btn--outline" type="button" data-action="refresh">${icon('refresh')} Atualizar</button>
     </div>`;
 }
@@ -480,9 +497,44 @@ async function prepareDeliveryPhoto(file) {
 
 /* ------------------------------ entregas ----------------------------- */
 
+async function concludeBranch(order) {
+  if (order.status === 'delivered') return;
+  const ok = await confirmDialog({
+    title: 'Concluir parada',
+    message: `Confirmar a passagem pela <strong>${esc(order.customer)}</strong>?<br><span style="color:var(--muted);font-size:12.5px">${esc(order.address)}</span>`,
+    confirmLabel: 'Sim, concluir',
+    cancelLabel: 'Ainda não',
+    tone: 'success'
+  });
+  if (!ok) return;
+
+  state.busy = true;
+  try {
+    await api(`/api/rota/${state.token}/orders/${order.id}/deliver`, {
+      method: 'POST',
+      token: null,
+      body: {}
+    });
+    toast('Parada concluída!', 'success');
+    state.renderKey = null;
+    await load({ silent: true, force: true });
+    document.getElementById(`stop-${order.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } catch (err) {
+    toast(err.message || 'Não foi possível concluir a parada.', 'error');
+    state.renderKey = null;
+    await load({ silent: true, force: true });
+  } finally {
+    state.busy = false;
+  }
+}
+
 async function deliverOrder(id) {
   const order = findOrder(id);
   if (!order) return;
+  if (order.kind === 'branch') {
+    await concludeBranch(order);
+    return;
+  }
   const active = state.orders.find((o) => o.status === 'en_route');
   if (active && active.id !== order.id) {
     toast(`Finalize a entrega de ${active.customer} antes de concluir outra.`, 'error');
@@ -599,12 +651,15 @@ async function deliverOrder(id) {
 async function undoOrder(id) {
   const order = findOrder(id);
   if (!order) return;
+  const isBranch = order.kind === 'branch';
   const isDelivered = order.status === 'delivered';
   const ok = await confirmDialog({
-    title: isDelivered ? 'Desfazer entrega' : 'Voltar para pendente',
-    message: isDelivered
-      ? `Desfazer a entrega de <strong>${esc(order.customer)}</strong>? O cliente verá a entrega como “em rota” novamente.`
-      : `Voltar <strong>${esc(order.customer)}</strong> para pendente? O mapa do cliente será desligado.`,
+    title: isBranch ? 'Desfazer parada' : isDelivered ? 'Desfazer entrega' : 'Voltar para pendente',
+    message: isBranch
+      ? `Reabrir a parada da <strong>${esc(order.customer)}</strong>? Ela volta para pendente.`
+      : isDelivered
+        ? `Desfazer a entrega de <strong>${esc(order.customer)}</strong>? O cliente verá a entrega como “em rota” novamente.`
+        : `Voltar <strong>${esc(order.customer)}</strong> para pendente? O mapa do cliente será desligado.`,
     confirmLabel: 'Desfazer',
     cancelLabel: 'Cancelar',
     tone: 'danger'
@@ -617,7 +672,10 @@ async function undoOrder(id) {
       method: 'POST',
       token: null
     });
-    toast(isDelivered ? 'Entrega reaberta.' : 'Pedido voltou para pendente.', 'success');
+    toast(
+      isBranch ? 'Parada reaberta.' : isDelivered ? 'Entrega reaberta.' : 'Pedido voltou para pendente.',
+      'success'
+    );
     state.renderKey = null;
     await load({ silent: true, force: true });
   } catch (err) {

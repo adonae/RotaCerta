@@ -35,6 +35,33 @@ import {
 
 const SESSION_DAYS = 30;
 
+/* --------------------------- paradas fixas ---------------------------- */
+/*
+ * Toda rota inclui as duas filiais. Elas são gravadas como pedidos especiais
+ * (kind = 'branch') para reaproveitar a otimização, a sequência, o mapa e o
+ * acompanhamento do motoboy sem duplicar regras.
+ */
+const BRANCH_STOPS = [
+  {
+    code: 'F-BAN',
+    name: 'Loja Bancários',
+    address:
+      'Rua João Rodrigues Alves, Praça da Paz, 253 - Sl 03 - Jardim São Paulo, João Pessoa - PB, 58051-022',
+    cep: '58051022',
+    lat: -7.1466257,
+    lng: -34.8484656
+  },
+  {
+    code: 'F-MAN',
+    name: 'Loja Manaíra',
+    address:
+      'Ed. Business Center - Av. Gov. Flávio Ribeiro Coutinho, 205 - Sl 105 - Manaíra, João Pessoa - PB, 58037-000',
+    cep: '58037000',
+    lat: -7.0975186,
+    lng: -34.8353504
+  }
+];
+
 export default {
   async fetch(request, env, ctx) {
     const url = new URL(request.url);
@@ -306,6 +333,7 @@ function mapOrder(o, includeToken = true) {
   const base = {
     id: o.id,
     code: o.code,
+    kind: o.kind || 'delivery',
     customer: o.customer,
     phone: o.phone || '',
     address: o.address,
@@ -456,6 +484,31 @@ async function listRoutes(env) {
   return json({ routes: rows.map(mapRoute) });
 }
 
+async function ensureBranchStops(env, routeId) {
+  const now = nowIso();
+  const statements = BRANCH_STOPS.map((branch) =>
+    env.DB.prepare(
+      `INSERT OR IGNORE INTO orders
+        (id, route_id, token, code, customer, phone, address, cep, reference, notes,
+         lat, lng, geocode_source, status, kind, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, ?, '', '', ?, ?, 'branch', 'pending', 'branch', ?, ?)`
+    ).bind(
+      'or_' + newToken(8),
+      routeId,
+      newToken(16),
+      branch.code,
+      branch.name,
+      branch.address,
+      branch.cep,
+      branch.lat,
+      branch.lng,
+      now,
+      now
+    )
+  );
+  await batch(env, statements);
+}
+
 async function createRoute(request, env) {
   const body = await readJson(request);
   const settings = publicSettings(await getSettings(env));
@@ -481,6 +534,7 @@ async function createRoute(request, env) {
     now,
     now
   );
+  await ensureBranchStops(env, id);
   const route = await first(env, 'SELECT * FROM routes WHERE id = ?', id);
   return json({ ok: true, route: mapRoute(route) }, { status: 201 });
 }
@@ -617,6 +671,13 @@ async function updateOrder(request, env, id) {
   if (!isId(id)) throw new HttpError(404, 'Pedido não encontrado.');
   const order = await first(env, 'SELECT * FROM orders WHERE id = ?', id);
   if (!order) throw new HttpError(404, 'Pedido não encontrado.');
+  if (order.kind === 'branch') {
+    throw new HttpError(
+      409,
+      'As paradas das filiais são fixas e não podem ser editadas.',
+      'branch_stop'
+    );
+  }
   const body = await readJson(request);
 
   const sets = [];
@@ -678,6 +739,13 @@ async function deleteOrder(env, id) {
   if (!isId(id)) throw new HttpError(404, 'Pedido não encontrado.');
   const order = await first(env, 'SELECT * FROM orders WHERE id = ?', id);
   if (!order) throw new HttpError(404, 'Pedido não encontrado.');
+  if (order.kind === 'branch') {
+    throw new HttpError(
+      409,
+      'As paradas das filiais fazem parte da rota e não podem ser excluídas.',
+      'branch_stop'
+    );
+  }
   if (order.photo_key) {
     try {
       await env.PHOTOS.delete(order.photo_key);
@@ -697,6 +765,7 @@ async function optimizeRoute(request, env, routeId) {
   if (!isId(routeId)) throw new HttpError(404, 'Rota não encontrada.');
   const route = await first(env, 'SELECT * FROM routes WHERE id = ?', routeId);
   if (!route) throw new HttpError(404, 'Rota não encontrada.');
+  await ensureBranchStops(env, routeId);
 
   let body = {};
   try {
@@ -909,6 +978,13 @@ async function riderOrderAction(request, env, token, orderId, action) {
   );
 
   if (action === 'en-route') {
+    if (order.kind === 'branch') {
+      throw new HttpError(
+        409,
+        'Esta parada é uma filial. Use “Concluir parada” para registrar a passagem.',
+        'branch_stop'
+      );
+    }
     if (order.status !== 'pending') {
       throw new HttpError(409, 'Este pedido não está mais pendente.', 'invalid_status');
     }
@@ -938,60 +1014,104 @@ async function riderOrderAction(request, env, token, orderId, action) {
     );
   } else if (action === 'deliver') {
     if (order.status === 'delivered') {
-      throw new HttpError(409, 'Este pedido já foi entregue.', 'invalid_status');
-    }
-    if (active) {
       throw new HttpError(
         409,
-        `Finalize a entrega de ${active.customer} antes de concluir outra.`,
-        'active_delivery',
-        { orderId: active.id }
+        order.kind === 'branch' ? 'Esta parada já foi concluída.' : 'Este pedido já foi entregue.',
+        'invalid_status'
       );
     }
 
-    const photo = decodePhoto(await readJsonPhoto(request));
-    const photoKey = photoKeyFor(route.id, order.id);
-    try {
-      await env.PHOTOS.put(photoKey, photo.data, {
-        expirationTtl: PHOTO_TTL_SECONDS,
-        metadata: {
-          mime: photo.mime,
-          bytes: photo.bytes,
-          routeId: route.id,
-          orderId: order.id,
-          createdAt: now
-        }
-      });
-    } catch (err) {
-      console.error('Falha ao guardar a foto da entrega:', err);
-      throw new HttpError(503, 'Não foi possível guardar a foto. Tente novamente.', 'photo_storage');
-    }
+    if (order.kind === 'branch') {
+      await run(
+        env,
+        `UPDATE orders
+         SET status = 'delivered', delivered_at = ?, updated_at = ?,
+             photo_key = NULL, photo_mime = NULL, photo_at = NULL
+         WHERE id = ?`,
+        now,
+        now,
+        order.id
+      );
+      await run(
+        env,
+        `INSERT INTO events (route_id, order_id, type, payload, created_at) VALUES (?, ?, 'delivered', ?, ?)`,
+        route.id,
+        order.id,
+        JSON.stringify({ seq: order.seq, branch: true }),
+        now
+      );
+      await recalcRouteStatus(env, route.id);
+      await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, route.id);
+    } else {
+      if (active) {
+        throw new HttpError(
+          409,
+          `Finalize a entrega de ${active.customer} antes de concluir outra.`,
+          'active_delivery',
+          { orderId: active.id }
+        );
+      }
 
-    await run(
-      env,
-      `UPDATE orders
-       SET status = 'delivered', delivered_at = ?, updated_at = ?,
-           photo_key = ?, photo_mime = ?, photo_at = ?
-       WHERE id = ?`,
-      now,
-      now,
-      photoKey,
-      photo.mime,
-      now,
-      order.id
-    );
-    await run(
-      env,
-      `INSERT INTO events (route_id, order_id, type, payload, created_at) VALUES (?, ?, 'delivered', ?, ?)`,
-      route.id,
-      order.id,
-      JSON.stringify({ seq: order.seq, photo: true }),
-      now
-    );
-    await recalcRouteStatus(env, route.id);
-    await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, route.id);
+      const photo = decodePhoto(await readJsonPhoto(request));
+      const photoKey = photoKeyFor(route.id, order.id);
+      try {
+        await env.PHOTOS.put(photoKey, photo.data, {
+          expirationTtl: PHOTO_TTL_SECONDS,
+          metadata: {
+            mime: photo.mime,
+            bytes: photo.bytes,
+            routeId: route.id,
+            orderId: order.id,
+            createdAt: now
+          }
+        });
+      } catch (err) {
+        console.error('Falha ao guardar a foto da entrega:', err);
+        throw new HttpError(503, 'Não foi possível guardar a foto. Tente novamente.', 'photo_storage');
+      }
+
+      await run(
+        env,
+        `UPDATE orders
+         SET status = 'delivered', delivered_at = ?, updated_at = ?,
+             photo_key = ?, photo_mime = ?, photo_at = ?
+         WHERE id = ?`,
+        now,
+        now,
+        photoKey,
+        photo.mime,
+        now,
+        order.id
+      );
+      await run(
+        env,
+        `INSERT INTO events (route_id, order_id, type, payload, created_at) VALUES (?, ?, 'delivered', ?, ?)`,
+        route.id,
+        order.id,
+        JSON.stringify({ seq: order.seq, photo: true }),
+        now
+      );
+      await recalcRouteStatus(env, route.id);
+      await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, route.id);
+    }
   } else if (action === 'undo') {
-    if (order.status === 'delivered') {
+    if (order.kind === 'branch') {
+      if (order.status !== 'delivered') {
+        throw new HttpError(409, 'Esta parada ainda não foi concluída.', 'invalid_status');
+      }
+      await run(
+        env,
+        `UPDATE orders
+         SET status = 'pending', delivered_at = NULL, en_route_at = NULL,
+             photo_key = NULL, photo_mime = NULL, photo_at = NULL,
+             updated_at = ?
+         WHERE id = ?`,
+        now,
+        order.id
+      );
+      await recalcRouteStatus(env, route.id);
+      await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, route.id);
+    } else if (order.status === 'delivered') {
       if (active) {
         throw new HttpError(
           409,

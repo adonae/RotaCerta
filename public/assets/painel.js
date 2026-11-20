@@ -258,7 +258,7 @@ function routeCard(r) {
       <div class="route-card__meta">
         <span><strong>${r.pending}</strong> pendentes</span>
         <span><strong>${r.enRoute}</strong> em rota</span>
-        <span><strong>${r.delivered}</strong> entregues</span>
+        <span><strong>${r.delivered}</strong> concluídas</span>
         ${r.distanceM != null ? `<span><strong>${formatDistance(r.distanceM)}</strong> · ${formatDuration(r.durationS)}</span>` : ''}
       </div>
       <div class="route-card__bar">
@@ -428,7 +428,7 @@ function updateRouteLive() {
       <div class="stat">
         <div class="stat__label">Paradas</div>
         <div class="stat__value">${total}</div>
-        <div class="stat__hint">${delivered.length} entregues</div>
+        <div class="stat__hint">${delivered.length} concluídas</div>
       </div>
       <div class="stat stat--brand">
         <div class="stat__label">Pendentes</div>
@@ -441,7 +441,7 @@ function updateRouteLive() {
         <div class="stat__hint">${active ? esc(firstName(active.customer)) : 'nenhuma agora'}</div>
       </div>
       <div class="stat stat--green">
-        <div class="stat__label">Entregues</div>
+        <div class="stat__label">Concluídas</div>
         <div class="stat__value">${delivered.length}</div>
         <div class="stat__hint">${total ? Math.round((delivered.length / total) * 100) : 0}% da rota</div>
       </div>`;
@@ -494,14 +494,14 @@ function updateRouteLive() {
   }
 
   const footCount = $('#detail-foot-count');
-  if (footCount) footCount.textContent = `${total} pedido${total === 1 ? '' : 's'}`;
+  if (footCount) footCount.textContent = `${total} parada${total === 1 ? '' : 's'}`;
 
   const summaryStatus = $('#summary-status');
   if (summaryStatus) summaryStatus.innerHTML = routeStatusChip(route.status);
 
   setText('summary-distance', route.distanceM != null ? formatDistance(route.distanceM) : 'Ainda não calculada');
   setText('summary-duration', route.durationS != null ? formatDuration(route.durationS) : '—');
-  setText('summary-orders', `${total} parada${total === 1 ? '' : 's'} · ${delivered.length} entregue${delivered.length === 1 ? '' : 's'}`);
+  setText('summary-orders', `${total} parada${total === 1 ? '' : 's'} · ${delivered.length} concluída${delivered.length === 1 ? '' : 's'}`);
   setText(
     'summary-optimized',
     route.optimizedAt
@@ -520,7 +520,8 @@ function updateRouteLive() {
 
 function stopRowHtml(order, index, active) {
   const seq = order.seq ?? index + 1;
-  const missing = !hasCoords(order) && order.status !== 'canceled';
+  const isBranch = order.kind === 'branch';
+  const missing = !isBranch && !hasCoords(order) && order.status !== 'canceled';
   const classes = [
     'stop-row',
     order.status === 'en_route' ? 'stop-row--enroute' : '',
@@ -529,19 +530,23 @@ function stopRowHtml(order, index, active) {
   ].filter(Boolean).join(' ');
 
   const link = customerLinkFor(order.token);
-  const wa = order.phone
+  const wa = !isBranch && order.phone
     ? waLink(order.phone, customerMessage(order, link))
     : '';
 
-  const actions = [
-    order.hasPhoto ? `<button class="btn btn--icon" type="button" data-action="view-photo" data-id="${esc(order.id)}" title="Ver foto da entrega" aria-label="Ver foto da entrega">${icon('camera')}</button>` : '',
-    `<button class="btn btn--icon" type="button" data-action="copy-order-link" data-id="${esc(order.id)}" title="Copiar link do cliente" aria-label="Copiar link do cliente">${icon('link')}</button>`,
-    wa ? `<a class="btn btn--icon" href="${esc(wa)}" target="_blank" rel="noopener" title="Enviar link no WhatsApp" aria-label="Enviar link no WhatsApp">${icon('whatsapp')}</a>` : '',
-    `<a class="btn btn--icon" href="${esc(mapsLink(order))}" target="_blank" rel="noopener" title="Abrir endereço no Google Maps" aria-label="Abrir no mapa">${icon('navigation')}</a>`,
-    `<button class="btn btn--icon ${missing ? 'btn--soft' : ''}" type="button" data-action="pin-order" data-id="${esc(order.id)}" title="Ajustar localização no mapa" aria-label="Ajustar localização">${icon('mapPin')}</button>`,
-    `<button class="btn btn--icon" type="button" data-action="edit-order" data-id="${esc(order.id)}" title="Editar pedido" aria-label="Editar pedido">${icon('edit')}</button>`,
-    `<button class="btn btn--icon is-danger" type="button" data-action="delete-order" data-id="${esc(order.id)}" title="Excluir pedido" aria-label="Excluir pedido">${icon('trash')}</button>`
-  ].filter(Boolean).join('');
+  const actions = isBranch
+    ? [
+        `<a class="btn btn--icon" href="${esc(mapsLink(order))}" target="_blank" rel="noopener" title="Abrir endereço no Google Maps" aria-label="Abrir no mapa">${icon('navigation')}</a>`
+      ].join('')
+    : [
+        order.hasPhoto ? `<button class="btn btn--icon" type="button" data-action="view-photo" data-id="${esc(order.id)}" title="Ver foto da entrega" aria-label="Ver foto da entrega">${icon('camera')}</button>` : '',
+        `<button class="btn btn--icon" type="button" data-action="copy-order-link" data-id="${esc(order.id)}" title="Copiar link do cliente" aria-label="Copiar link do cliente">${icon('link')}</button>`,
+        wa ? `<a class="btn btn--icon" href="${esc(wa)}" target="_blank" rel="noopener" title="Enviar link no WhatsApp" aria-label="Enviar link no WhatsApp">${icon('whatsapp')}</a>` : '',
+        `<a class="btn btn--icon" href="${esc(mapsLink(order))}" target="_blank" rel="noopener" title="Abrir endereço no Google Maps" aria-label="Abrir no mapa">${icon('navigation')}</a>`,
+        `<button class="btn btn--icon ${missing ? 'btn--soft' : ''}" type="button" data-action="pin-order" data-id="${esc(order.id)}" title="Ajustar localização no mapa" aria-label="Ajustar localização">${icon('mapPin')}</button>`,
+        `<button class="btn btn--icon" type="button" data-action="edit-order" data-id="${esc(order.id)}" title="Editar pedido" aria-label="Editar pedido">${icon('edit')}</button>`,
+        `<button class="btn btn--icon is-danger" type="button" data-action="delete-order" data-id="${esc(order.id)}" title="Excluir pedido" aria-label="Excluir pedido">${icon('trash')}</button>`
+      ].filter(Boolean).join('');
 
   return `
     <div class="${classes}" id="stop-${esc(order.id)}" data-order-id="${esc(order.id)}">
@@ -550,6 +555,7 @@ function stopRowHtml(order, index, active) {
         <div class="stop-row__top">
           <span class="stop-row__name">${esc(order.customer)}</span>
           <span class="stop-row__code">${esc(order.code)}</span>
+          ${isBranch ? '<span class="chip chip--ink"><span class="chip__dot"></span>Filial</span>' : ''}
           ${statusChip(order.status)}
           ${missing ? `<span class="chip chip--amber"><span class="chip__dot"></span>Sem localização</span>` : ''}
           ${!missing && order.geocodeSource === 'cep' ? `<span class="chip chip--ink" title="Localização aproximada pelo CEP"><span class="chip__dot"></span>Aproximada (CEP)</span>` : ''}
@@ -1749,7 +1755,7 @@ function openShareRoute() {
 function openShareCustomers() {
   const route = state.route;
   if (!route) return;
-  const orders = state.orders.filter((o) => o.status !== 'canceled');
+  const orders = state.orders.filter((o) => o.status !== 'canceled' && o.kind !== 'branch');
   const allLinks = orders
     .map((o) => `${firstName(o.customer)} (${o.code}): ${customerLinkFor(o.token)}`)
     .join('\n');

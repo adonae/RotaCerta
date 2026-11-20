@@ -150,6 +150,11 @@ try {
   await page.waitForTimeout(800);
   log('   route: ' + routeId);
 
+  const branchCheck = await api(`/api/routes/${routeId}`);
+  const branchStops = (branchCheck.orders || []).filter((o) => o.kind === 'branch');
+  log('   filiais: ' + branchStops.map((o) => `${o.code}=${o.customer}`).join(' | '));
+  if (branchStops.length !== 2) throw new Error('Rota criada sem as duas filiais');
+
   log('4. Add 3 orders via UI');
   await page.click('.detail-head__actions [data-action="add-orders"]');
   await page.waitForSelector('dialog[open]');
@@ -160,7 +165,7 @@ try {
     'Beatriz Alves; (83) 97777-3333; Avenida Tabajaras, 848, Centro, João Pessoa - PB; Em frente à praça; ; 58013-270'
   ].join('\n'));
   await page.click('dialog .dialog__foot button:has-text("Adicionar")');
-  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 3, null, { timeout: 15000 });
+  await page.waitForFunction(() => document.querySelectorAll('.stop-row').length === 5, null, { timeout: 15000 });
   log('   stops: ' + await page.locator('.stop-row').count());
 
   const detail = await api(`/api/routes/${routeId}`);
@@ -170,13 +175,14 @@ try {
     { lat: -7.1350000, lng: -34.8700000 },
     { lat: -7.1220077, lng: -34.8771620 }
   ];
-  for (let i = 0; i < detail.orders.length; i++) {
-    await api(`/api/orders/${detail.orders[i].id}`, {
+  const deliveryStops = detail.orders.filter((o) => o.kind !== 'branch');
+  for (let i = 0; i < deliveryStops.length; i++) {
+    await api(`/api/orders/${deliveryStops[i].id}`, {
       method: 'PATCH',
       body: { ...coords[i], geocodeSource: 'manual' }
     });
   }
-  log('   coords set via API for ' + detail.orders.length + ' orders');
+  log('   coords set via API for ' + deliveryStops.length + ' deliveries (branches keep fixed coords)');
 
   log('4b. CEP + rascunho no formulário');
   await page.click('.detail-head__actions [data-action="add-orders"]');
@@ -230,7 +236,7 @@ try {
   await page.waitForTimeout(300);
 
   log('4c. Pin dialog (ajustar localização)');
-  const pinOrder = detail.orders[0];
+  const pinOrder = deliveryStops[0];
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForSelector(`#stop-${pinOrder.id}`);
   await page.click(`#stop-${pinOrder.id} [data-action="pin-order"]`);
@@ -258,6 +264,11 @@ try {
   log('   sequence: ' + ordered.map((o) => `${o.seq}=${o.customer}`).join(' | '));
   log(`   distance=${optimized.route.distanceM} source=${optimized.route.geometrySource} points=${optimized.route.geometry?.coordinates?.length || 0}`);
   if (ordered.some((o) => !o.seq)) throw new Error('Otimização não aplicou sequência');
+  const orderedBranches = ordered.filter((o) => o.kind === 'branch');
+  const deliveryOrdered = ordered.filter((o) => o.kind !== 'branch');
+  log('   filiais na sequência: ' + orderedBranches.map((o) => `${o.seq}=${o.customer}`).join(' | '));
+  if (orderedBranches.length !== 2) throw new Error('Otimização não manteve as duas filiais');
+  if (deliveryOrdered.length !== 3) throw new Error('Quantidade de entregas inesperada');
 
   log('6. Share dialogs');
   await page.click('.detail-head__actions [data-action="share-route"]');
@@ -267,6 +278,11 @@ try {
   await page.waitForTimeout(300);
   await page.click('[data-action="share-customers"]');
   await page.waitForSelector('dialog[open]');
+  const shareRows = await page.locator('dialog[open] .share-order').count();
+  const shareText = await page.locator('dialog[open] .share-list').textContent();
+  log(`   links de clientes: ${shareRows} (filiais fora da lista)`);
+  if (shareRows !== 3) throw new Error('Links dos clientes não excluíram as filiais');
+  if (/Loja (Bancários|Manaíra)/.test(shareText)) throw new Error('Filial apareceu nos links dos clientes');
   await page.screenshot({ path: shot('08-share-customers.png') });
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
@@ -278,10 +294,41 @@ try {
   await riderPage.waitForSelector('.stop-card', { timeout: 15000 });
   log('   h1: ' + await riderPage.locator('.rider-hero h1').textContent());
   log('   ordem: ' + (await riderPage.locator('.stop-card__title').allTextContents()).join(' | '));
+  if ((await riderPage.locator('.stop-card').count()) !== 5) throw new Error('Rota do motoboy sem as duas filiais');
   await riderPage.screenshot({ path: shot('09-rider.png'), fullPage: true });
 
-  log('8. Customer waiting page (1ª parada)');
-  const firstOrder = ordered[0];
+  log('7b. Filial concluída sem foto e reaberta');
+  const branchToTest = orderedBranches[0];
+  await riderPage.click(`#stop-${branchToTest.id} [data-action="deliver"]`);
+  await riderPage.waitForSelector('dialog[open]');
+  log('   diálogo: ' + (await riderPage.locator('dialog[open] h2').textContent()).trim());
+  await riderPage.click('dialog .dialog__foot button:has-text("Sim, concluir")');
+  await riderPage.waitForFunction(
+    (id) => document.querySelector(`#stop-${id}`)?.classList.contains('stop-card--delivered'),
+    branchToTest.id,
+    { timeout: 20000 }
+  );
+  log('   ' + await waitToast(riderPage, 'Parada concluída'));
+  const branchDone = (await api(`/api/rota/${optimized.route.token}`, { auth: false }))
+    .orders.find((o) => o.id === branchToTest.id);
+  if (branchDone.status !== 'delivered' || branchDone.hasPhoto) {
+    throw new Error('Filial concluída com foto ou status inesperado');
+  }
+  await riderPage.click(`#stop-${branchToTest.id} [data-action="undo"]`);
+  await riderPage.waitForSelector('dialog[open]');
+  await riderPage.click('dialog .dialog__foot button:has-text("Desfazer")');
+  await riderPage.waitForFunction(
+    (id) => !document.querySelector(`#stop-${id}`)?.classList.contains('stop-card--delivered'),
+    branchToTest.id,
+    { timeout: 20000 }
+  );
+  log('   ' + await waitToast(riderPage, 'Parada reaberta'));
+  const branchUndone = (await api(`/api/rota/${optimized.route.token}`, { auth: false }))
+    .orders.find((o) => o.id === branchToTest.id);
+  if (branchUndone.status !== 'pending') throw new Error('Desfazer parada não voltou para pendente');
+
+  log('8. Customer waiting page (1ª entrega)');
+  const firstOrder = deliveryOrdered[0];
   const customerPage = await context.newPage();
   attach(customerPage, 'cliente');
   await customerPage.goto(`${BASE}/acompanhar?t=${firstOrder.token}`, { waitUntil: 'networkidle' });
@@ -368,7 +415,7 @@ try {
     body: { customer: 'Sem Foto', address: 'Rua das Trincheiras, 10, Centro, João Pessoa - PB' }
   });
   const noPhotoDetail = await api(`/api/routes/${noPhotoRoute.route.id}`);
-  const noPhotoOrder = noPhotoDetail.orders[0];
+  const noPhotoOrder = noPhotoDetail.orders.find((o) => o.kind !== 'branch');
   const noPhotoRes = await fetch(
     `${BASE}/api/rota/${noPhotoRoute.route.token}/orders/${noPhotoOrder.id}/deliver`,
     { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }
@@ -422,7 +469,7 @@ try {
   log('13. Segunda cliente aguardando');
   const waiting2 = await context.newPage();
   attach(waiting2, 'cliente2');
-  await waiting2.goto(`${BASE}/acompanhar?t=${ordered[1].token}`, { waitUntil: 'networkidle' });
+  await waiting2.goto(`${BASE}/acompanhar?t=${deliveryOrdered[1].token}`, { waitUntil: 'networkidle' });
   await waiting2.waitForSelector('.track-hero h1');
   log('   waiting2: ' + await waiting2.locator('.track-hero h1').textContent());
   await waiting2.screenshot({ path: shot('16-customer-waiting2.png'), fullPage: true });
@@ -488,7 +535,7 @@ try {
   await fallbackPage.screenshot({ path: shot('20-geocode-cep-fallback.png'), fullPage: true });
 
   const fallbackDetail = await api(`/api/routes/${fallbackRouteId}`);
-  const fallbackOrder = fallbackDetail.orders[0];
+  const fallbackOrder = fallbackDetail.orders.find((o) => o.kind !== 'branch');
   log(`   fonte=${fallbackOrder.geocodeSource} coords=${fallbackOrder.lat.toFixed(5)},${fallbackOrder.lng.toFixed(5)}`);
   if (fallbackOrder.geocodeSource !== 'cep') throw new Error('Fallback pelo CEP não aplicado');
   await fallbackPage.unroute('https://nominatim.openstreetmap.org/search**');

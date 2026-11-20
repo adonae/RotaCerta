@@ -6,11 +6,12 @@ Sistema de entregas para loja e motoboy, com rota otimizada, link individual par
 
 1. A loja entra no painel com senha e cria a rota do dia.
 2. Cadastra os pedidos (nome, telefone, CEP, endereço e referência).
-3. O sistema busca os endereços no mapa e calcula a melhor ordem de entrega partindo do ponto de retirada.
-4. A loja envia **um link para o motoboy** e **um link para cada cliente**.
-5. O motoboy vê as paradas numeradas e usa os botões **Em rota** e **Entregue**.
-6. Ao tocar em **Entregue**, ele precisa tirar uma foto do local da entrega. A loja pode ver a foto no painel; ela é apagada automaticamente após **3 dias**.
-7. Quando o motoboy toca em **Em rota**, o cliente vê o mapa ao vivo. Em **Entregue**, o cliente vê a confirmação com o horário.
+3. Toda rota já nasce com as duas filiais (Loja Bancários e Loja Manaíra) como paradas fixas.
+4. O sistema busca os endereços no mapa e calcula a melhor ordem de entrega partindo do ponto de retirada, incluindo as filiais junto com as entregas.
+5. A loja envia **um link para o motoboy** e **um link para cada cliente**.
+6. O motoboy vê as paradas numeradas e usa **Em rota** e **Entregue** nas entregas; nas filiais, usa **Concluir parada**.
+7. Ao tocar em **Entregue**, ele precisa tirar uma foto do local da entrega. A loja pode ver a foto no painel; ela é apagada automaticamente após **3 dias**.
+8. Quando o motoboy toca em **Em rota**, o cliente vê o mapa ao vivo. Em **Entregue**, o cliente vê a confirmação com o horário.
 
 Não há controle financeiro nem valores de pedido.
 
@@ -35,6 +36,7 @@ migrations/
   0001_init.sql         schema do banco D1
   0002_order_cep.sql    coluna de CEP nos pedidos
   0003_delivery_photo.sql  referência da foto de entrega
+  0004_route_branches.sql  paradas fixas das filiais
 wrangler.jsonc          configuração do Worker + D1 + KV + assets
 ```
 
@@ -142,11 +144,28 @@ npm run deploy
 - Desfazer uma entrega apaga a foto correspondente. Excluir o pedido ou a rota também remove as fotos.
 - O link do cliente não mostra a foto; ela é visível apenas no painel da loja.
 
+## Filiais na rota
+
+Toda rota inclui automaticamente duas paradas fixas, além do ponto de retirada:
+
+| Código | Filial | Endereço |
+| --- | --- | --- |
+| `F-BAN` | Loja Bancários | Rua João Rodrigues Alves, Praça da Paz, 253 - Sl 03 - Jardim São Paulo, João Pessoa - PB, 58051-022 |
+| `F-MAN` | Loja Manaíra | Ed. Business Center - Av. Gov. Flávio Ribeiro Coutinho, 205 - Sl 105 - Manaíra, João Pessoa - PB, 58037-000 |
+
+- As filiais entram na mesma otimização das entregas e recebem uma posição na sequência da rota.
+- No painel e no link do motoboy, elas aparecem como **Filial**, com o botão **Concluir parada**.
+- A conclusão de uma filial **não exige foto** e não interfere na entrega que estiver “Em rota”.
+- Filiais não geram link de cliente, não têm WhatsApp e não podem ser editadas ou excluídas.
+- Rotas criadas antes desta versão recebem as duas filiais automaticamente pela migração `0004_route_branches.sql`.
+
 ## Regras do sistema
 
 - Cada rota tem um token aleatório para o motoboy e cada pedido tem um token aleatório para o cliente.
 - O painel usa senha com hash PBKDF2 e sessões de 30 dias.
 - O servidor permite **uma entrega “Em rota” por vez**; a segunda tentativa retorna erro e a interface orienta a finalizar a atual.
+- As duas paradas das filiais são fixas em toda rota, participam da otimização e não precisam de foto ao serem concluídas.
+- A conclusão exige foto apenas para entregas de clientes; filiais usam **Concluir parada**.
 - O mapa do cliente só recebe a posição do entregador enquanto o pedido dele está em rota.
 - O formulário de novo pedido **não fecha ao clicar fora** e guarda um rascunho no navegador até o pedido ser adicionado ou o botão **Cancelar** ser usado.
 - A posição do motoboy é enviada a cada ~8 segundos enquanto houver entrega ativa e a página estiver aberta.
