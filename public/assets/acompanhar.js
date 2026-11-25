@@ -53,7 +53,12 @@ async function refresh({ silent = true } = {}) {
     schedule();
   } catch (err) {
     if (err.status === 404) {
-      renderError('Este link de acompanhamento é inválido ou expirou. Peça um novo link para a loja.', false);
+      // A entrega já concluída continua visível mesmo se o pedido for removido.
+      if (state.data?.order.status === 'delivered') {
+        schedule();
+        return;
+      }
+      renderError('Este link de acompanhamento não é mais válido. Peça um novo link para a loja.', false);
       return;
     }
     if (!state.data) {
@@ -67,9 +72,10 @@ async function refresh({ silent = true } = {}) {
 function schedule() {
   clearTimeout(state.timer);
   const status = state.data?.order.status;
-  if (!status || status === 'delivered' || status === 'canceled') return;
+  if (!status || status === 'canceled') return;
 
-  const delay = status === 'en_route' ? 4000 : 12000;
+  // Entregue: consulta lenta só para refletir um eventual “desfazer”.
+  const delay = status === 'en_route' ? 4000 : status === 'delivered' ? 60000 : 12000;
   state.timer = setTimeout(() => {
     if (document.hidden) {
       schedule();

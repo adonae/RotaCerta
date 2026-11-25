@@ -14,6 +14,7 @@ import {
   haversineM,
   hashPassword,
   hasCoords,
+  invalidatePlan,
   isoDate,
   isId,
   json,
@@ -370,7 +371,8 @@ function hasFreshPhoto(order) {
 }
 
 function photoKeyFor(routeId, orderId) {
-  return `delivery-photo/${routeId}/${orderId}`;
+  // Chave única por tentativa: desfazer/excluir apaga só a foto daquela entrega.
+  return `delivery-photo/${routeId}/${orderId}-${newToken(4)}`;
 }
 
 function decodePhoto(body) {
@@ -591,13 +593,28 @@ async function deleteRoute(env, id) {
   if (!isId(id)) throw new HttpError(404, 'Rota não encontrada.');
   const route = await first(env, 'SELECT id FROM routes WHERE id = ?', id);
   if (!route) throw new HttpError(404, 'Rota não encontrada.');
-  const photos = await all(
+  const removed = await run(
     env,
-    'SELECT photo_key FROM orders WHERE route_id = ? AND photo_key IS NOT NULL',
+    `DELETE FROM routes
+     WHERE id = ?
+       AND NOT EXISTS (
+         SELECT 1 FROM orders WHERE route_id = ? AND status = 'en_route'
+       )`,
+    id,
     id
   );
-  await Promise.allSettled(photos.map((p) => env.PHOTOS.delete(p.photo_key)));
-  await run(env, 'DELETE FROM routes WHERE id = ?', id);
+  if (!changed(removed)) {
+    const active = await activeDelivery(env, id);
+    if (active) {
+      throw new HttpError(
+        409,
+        'Finalize a entrega em andamento antes de excluir a rota.',
+        'active_delivery',
+        { orderId: active.id }
+      );
+    }
+    throw new HttpError(404, 'Rota não encontrada.');
+  }
   return json({ ok: true });
 }
 
@@ -607,6 +624,11 @@ async function addOrders(request, env, routeId) {
   if (!isId(routeId)) throw new HttpError(404, 'Rota não encontrada.');
   const route = await first(env, 'SELECT id FROM routes WHERE id = ?', routeId);
   if (!route) throw new HttpError(404, 'Rota não encontrada.');
+  await ensureNoActiveDelivery(
+    env,
+    routeId,
+    'Finalize a entrega em andamento antes de adicionar pedidos.'
+  );
 
   const body = await readJson(request);
   const list = Array.isArray(body.orders) ? body.orders : [body];
@@ -663,7 +685,7 @@ async function addOrders(request, env, routeId) {
     );
   }
   await batch(env, statements);
-  await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, routeId);
+  await invalidatePlan(env, routeId);
   return json({ ok: true, created: prepared.length }, { status: 201 });
 }
 
@@ -671,13 +693,8 @@ async function updateOrder(request, env, id) {
   if (!isId(id)) throw new HttpError(404, 'Pedido não encontrado.');
   const order = await first(env, 'SELECT * FROM orders WHERE id = ?', id);
   if (!order) throw new HttpError(404, 'Pedido não encontrado.');
-  if (order.kind === 'branch') {
-    throw new HttpError(
-      409,
-      'As paradas das filiais são fixas e não podem ser editadas.',
-      'branch_stop'
-    );
-  }
+  ensureOrderEditable(order);
+  await ensureNoActiveDelivery(env, order.route_id);
   const body = await readJson(request);
 
   const sets = [];
@@ -731,6 +748,7 @@ async function updateOrder(request, env, id) {
   params.push(id);
   await run(env, `UPDATE orders SET ${sets.join(', ')} WHERE id = ?`, ...params);
 
+  await invalidatePlan(env, order.route_id);
   const updated = await first(env, 'SELECT * FROM orders WHERE id = ?', id);
   return json({ ok: true, order: mapOrder(updated, true) });
 }
@@ -739,23 +757,18 @@ async function deleteOrder(env, id) {
   if (!isId(id)) throw new HttpError(404, 'Pedido não encontrado.');
   const order = await first(env, 'SELECT * FROM orders WHERE id = ?', id);
   if (!order) throw new HttpError(404, 'Pedido não encontrado.');
-  if (order.kind === 'branch') {
-    throw new HttpError(
-      409,
-      'As paradas das filiais fazem parte da rota e não podem ser excluídas.',
-      'branch_stop'
-    );
-  }
-  if (order.photo_key) {
+  ensureOrderEditable(order);
+  await ensureNoActiveDelivery(env, order.route_id);
+  const photoKey = order.photo_key || null;
+  await run(env, 'DELETE FROM orders WHERE id = ?', id);
+  await invalidatePlan(env, order.route_id);
+  if (photoKey) {
     try {
-      await env.PHOTOS.delete(order.photo_key);
+      await env.PHOTOS.delete(photoKey);
     } catch (err) {
       console.warn('Não foi possível apagar a foto do pedido:', err);
     }
   }
-  await run(env, 'DELETE FROM orders WHERE id = ?', id);
-  await recalcRouteStatus(env, order.route_id);
-  await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', nowIso(), order.route_id);
   return json({ ok: true });
 }
 
@@ -781,13 +794,11 @@ async function optimizeRoute(request, env, routeId) {
     routeId
   );
 
-  if (orders.some((o) => o.status === 'en_route')) {
-    throw new HttpError(
-      409,
-      'Finalize a entrega em andamento antes de recalcular a rota.',
-      'active_delivery'
-    );
-  }
+  await ensureNoActiveDelivery(
+    env,
+    routeId,
+    'Finalize a entrega em andamento antes de recalcular a rota.'
+  );
 
   const delivered = orders.filter((o) => o.status === 'delivered');
   const pending = orders.filter((o) => o.status === 'pending');
@@ -885,6 +896,48 @@ async function optimizeRoute(request, env, routeId) {
 
 /* ----------------------------- motoboy (token) ----------------------- */
 
+function changed(result) {
+  return Number(result?.meta?.changes || 0) > 0;
+}
+
+async function activeDelivery(env, routeId, excludeOrderId = null) {
+  return await first(
+    env,
+    `SELECT id, customer FROM orders
+     WHERE route_id = ? AND status = 'en_route' AND id <> ?`,
+    routeId,
+    excludeOrderId || ''
+  );
+}
+
+async function ensureNoActiveDelivery(
+  env,
+  routeId,
+  message = 'Finalize a entrega em andamento antes de alterar a rota.'
+) {
+  const active = await activeDelivery(env, routeId);
+  if (active) {
+    throw new HttpError(409, message, 'active_delivery', { orderId: active.id });
+  }
+}
+
+function ensureOrderEditable(order) {
+  if (order.kind === 'branch') {
+    throw new HttpError(
+      409,
+      'As paradas das filiais fazem parte da rota e não podem ser editadas nem excluídas.',
+      'branch_stop'
+    );
+  }
+  if (order.status === 'en_route' || order.status === 'delivered') {
+    throw new HttpError(
+      409,
+      'Pedidos em rota ou entregues não podem ser editados nem excluídos.',
+      'order_locked'
+    );
+  }
+}
+
 async function routeByToken(env, token) {
   if (!token || token.length < 16) return null;
   return await first(env, 'SELECT * FROM routes WHERE token = ?', token);
@@ -969,13 +1022,8 @@ async function riderOrderAction(request, env, token, orderId, action) {
   if (!order) throw new HttpError(404, 'Pedido não encontrado.');
 
   const now = nowIso();
-  const active = await first(
-    env,
-    `SELECT id, customer FROM orders
-     WHERE route_id = ? AND status = 'en_route' AND id <> ?`,
-    route.id,
-    order.id
-  );
+  let eventPayload = null;
+  const eventType = action === 'undo' ? 'undo' : action;
 
   if (action === 'en-route') {
     if (order.kind === 'branch') {
@@ -985,70 +1033,61 @@ async function riderOrderAction(request, env, token, orderId, action) {
         'branch_stop'
       );
     }
-    if (order.status !== 'pending') {
-      throw new HttpError(409, 'Este pedido não está mais pendente.', 'invalid_status');
-    }
-    if (active) {
-      throw new HttpError(
-        409,
-        `Finalize a entrega de ${active.customer} antes de iniciar outra.`,
-        'active_delivery',
-        { orderId: active.id }
-      );
-    }
-    await run(
+    const started = await run(
       env,
-      `UPDATE orders SET status = 'en_route', en_route_at = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE orders SET status = 'en_route', en_route_at = ?, updated_at = ?
+       WHERE id = ? AND status = 'pending'
+         AND NOT EXISTS (
+           SELECT 1 FROM orders
+           WHERE route_id = ? AND status = 'en_route' AND id <> ?
+         )`,
       now,
       now,
+      order.id,
+      route.id,
       order.id
     );
-    await run(env, `UPDATE routes SET status = 'active', updated_at = ? WHERE id = ?`, now, route.id);
-    await run(
-      env,
-      `INSERT INTO events (route_id, order_id, type, payload, created_at) VALUES (?, ?, 'en_route', ?, ?)`,
-      route.id,
-      order.id,
-      JSON.stringify({ seq: order.seq }),
-      now
-    );
-  } else if (action === 'deliver') {
-    if (order.status === 'delivered') {
-      throw new HttpError(
-        409,
-        order.kind === 'branch' ? 'Esta parada já foi concluída.' : 'Este pedido já foi entregue.',
-        'invalid_status'
-      );
+    if (!changed(started)) {
+      const current = await first(env, 'SELECT status FROM orders WHERE id = ?', order.id);
+      const active = await activeDelivery(env, route.id, order.id);
+      if (active && current?.status === 'pending') {
+        throw new HttpError(
+          409,
+          `Finalize a entrega de ${active.customer} antes de iniciar outra.`,
+          'active_delivery',
+          { orderId: active.id }
+        );
+      }
+      throw new HttpError(409, 'Este pedido não está mais pendente.', 'invalid_status');
     }
-
+    eventPayload = { seq: order.seq };
+  } else if (action === 'deliver') {
     if (order.kind === 'branch') {
-      await run(
+      const done = await run(
         env,
         `UPDATE orders
          SET status = 'delivered', delivered_at = ?, updated_at = ?,
              photo_key = NULL, photo_mime = NULL, photo_at = NULL
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'pending'`,
         now,
         now,
         order.id
       );
-      await run(
-        env,
-        `INSERT INTO events (route_id, order_id, type, payload, created_at) VALUES (?, ?, 'delivered', ?, ?)`,
-        route.id,
-        order.id,
-        JSON.stringify({ seq: order.seq, branch: true }),
-        now
-      );
-      await recalcRouteStatus(env, route.id);
-      await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, route.id);
+      if (!changed(done)) {
+        throw new HttpError(409, 'Esta parada já foi concluída.', 'invalid_status');
+      }
+      eventPayload = { seq: order.seq, branch: true };
     } else {
-      if (active) {
+      if (order.status === 'delivered') {
+        throw new HttpError(409, 'Este pedido já foi entregue.', 'invalid_status');
+      }
+      const preActive = await activeDelivery(env, route.id, order.id);
+      if (preActive) {
         throw new HttpError(
           409,
-          `Finalize a entrega de ${active.customer} antes de concluir outra.`,
+          `Finalize a entrega de ${preActive.customer} antes de concluir outra.`,
           'active_delivery',
-          { orderId: active.id }
+          { orderId: preActive.id }
         );
       }
 
@@ -1070,55 +1109,95 @@ async function riderOrderAction(request, env, token, orderId, action) {
         throw new HttpError(503, 'Não foi possível guardar a foto. Tente novamente.', 'photo_storage');
       }
 
-      await run(
+      const delivered = await run(
         env,
         `UPDATE orders
          SET status = 'delivered', delivered_at = ?, updated_at = ?,
              photo_key = ?, photo_mime = ?, photo_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status <> 'delivered'
+           AND NOT EXISTS (
+             SELECT 1 FROM orders
+             WHERE route_id = ? AND status = 'en_route' AND id <> ?
+           )`,
         now,
         now,
         photoKey,
         photo.mime,
         now,
+        order.id,
+        route.id,
         order.id
       );
-      await run(
-        env,
-        `INSERT INTO events (route_id, order_id, type, payload, created_at) VALUES (?, ?, 'delivered', ?, ?)`,
-        route.id,
-        order.id,
-        JSON.stringify({ seq: order.seq, photo: true }),
-        now
-      );
-      await recalcRouteStatus(env, route.id);
-      await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, route.id);
+      if (!changed(delivered)) {
+        // Chave única: apagar esta tentativa nunca atinge a foto de outra entrega.
+        try {
+          await env.PHOTOS.delete(photoKey);
+        } catch (err) {
+          console.warn('Não foi possível apagar a foto órfã da entrega:', err);
+        }
+        const current = await first(env, 'SELECT status FROM orders WHERE id = ?', order.id);
+        if (current?.status === 'delivered') {
+          throw new HttpError(409, 'Este pedido já foi entregue.', 'invalid_status');
+        }
+        const active = await activeDelivery(env, route.id, order.id);
+        if (active) {
+          throw new HttpError(
+            409,
+            `Finalize a entrega de ${active.customer} antes de concluir outra.`,
+            'active_delivery',
+            { orderId: active.id }
+          );
+        }
+        throw new HttpError(409, 'Este pedido não pode ser entregue agora.', 'invalid_status');
+      }
+      eventPayload = { seq: order.seq, photo: true };
     }
   } else if (action === 'undo') {
     if (order.kind === 'branch') {
-      if (order.status !== 'delivered') {
-        throw new HttpError(409, 'Esta parada ainda não foi concluída.', 'invalid_status');
-      }
-      await run(
+      const undone = await run(
         env,
         `UPDATE orders
          SET status = 'pending', delivered_at = NULL, en_route_at = NULL,
              photo_key = NULL, photo_mime = NULL, photo_at = NULL,
              updated_at = ?
-         WHERE id = ?`,
+         WHERE id = ? AND status = 'delivered'`,
         now,
         order.id
       );
-      await recalcRouteStatus(env, route.id);
-      await run(env, 'UPDATE routes SET updated_at = ? WHERE id = ?', now, route.id);
-    } else if (order.status === 'delivered') {
-      if (active) {
-        throw new HttpError(
-          409,
-          `Já existe outra entrega em andamento (${active.customer}).`,
-          'active_delivery'
-        );
+      if (!changed(undone)) {
+        throw new HttpError(409, 'Esta parada ainda não foi concluída.', 'invalid_status');
       }
+    } else if (order.status === 'delivered') {
+      const undone = await run(
+        env,
+        `UPDATE orders
+         SET status = 'en_route', delivered_at = NULL, en_route_at = ?,
+             photo_key = NULL, photo_mime = NULL, photo_at = NULL,
+             updated_at = ?
+         WHERE id = ? AND status = 'delivered'
+           AND NOT EXISTS (
+             SELECT 1 FROM orders
+             WHERE route_id = ? AND status = 'en_route' AND id <> ?
+           )`,
+        now,
+        now,
+        order.id,
+        route.id,
+        order.id
+      );
+      if (!changed(undone)) {
+        const active = await activeDelivery(env, route.id, order.id);
+        if (active) {
+          throw new HttpError(
+            409,
+            `Já existe outra entrega em andamento (${active.customer}).`,
+            'active_delivery',
+            { orderId: active.id }
+          );
+        }
+        throw new HttpError(409, 'Este pedido não pode ser revertido.', 'invalid_status');
+      }
+      // O D1 já voltou o pedido; apagar o KV depois evita foto órfã visível.
       if (order.photo_key) {
         try {
           await env.PHOTOS.delete(order.photo_key);
@@ -1126,39 +1205,38 @@ async function riderOrderAction(request, env, token, orderId, action) {
           console.warn('Não foi possível apagar a foto da entrega:', err);
         }
       }
-      await run(
-        env,
-        `UPDATE orders
-         SET status = 'en_route', delivered_at = NULL, en_route_at = ?,
-             photo_key = NULL, photo_mime = NULL, photo_at = NULL,
-             updated_at = ?
-         WHERE id = ?`,
-        now,
-        now,
-        order.id
-      );
-      await run(env, `UPDATE routes SET status = 'active', updated_at = ? WHERE id = ?`, now, route.id);
     } else if (order.status === 'en_route') {
-      await run(
+      const undone = await run(
         env,
-        `UPDATE orders SET status = 'pending', en_route_at = NULL, updated_at = ? WHERE id = ?`,
+        `UPDATE orders SET status = 'pending', en_route_at = NULL, updated_at = ?
+         WHERE id = ? AND status = 'en_route'`,
         now,
         order.id
       );
-      await recalcRouteStatus(env, route.id);
+      if (!changed(undone)) {
+        throw new HttpError(409, 'Este pedido não pode ser revertido.', 'invalid_status');
+      }
     } else {
       throw new HttpError(409, 'Este pedido não pode ser revertido.', 'invalid_status');
     }
-    await run(
-      env,
-      `INSERT INTO events (route_id, order_id, type, payload, created_at) VALUES (?, ?, 'undo', NULL, ?)`,
-      route.id,
-      order.id,
-      now
-    );
   } else {
     throw new HttpError(404, 'Ação não encontrada.');
   }
+
+  await recalcRouteStatus(env, route.id);
+  await batch(env, [
+    env.DB.prepare(
+      `INSERT INTO events (route_id, order_id, type, payload, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    ).bind(
+      route.id,
+      order.id,
+      eventType,
+      eventPayload === null ? null : JSON.stringify(eventPayload),
+      now
+    ),
+    env.DB.prepare('UPDATE routes SET updated_at = ? WHERE id = ?').bind(now, route.id)
+  ]);
 
   const updated = await first(env, 'SELECT * FROM orders WHERE id = ?', order.id);
   const stats = await routeStats(env, route.id);

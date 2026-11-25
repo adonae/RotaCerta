@@ -11,6 +11,26 @@ const PASSWORD = process.env.E2E_PASSWORD || 'rotacerta';
 const TEMP_PASSWORD = `${PASSWORD}-e2e`;
 const OUT = process.env.SHOTS_DIR || path.join(os.tmpdir(), 'rotacerta-e2e');
 
+let baseUrl;
+try {
+  baseUrl = new URL(BASE);
+} catch {
+  console.error(`BASE_URL inválida: ${BASE}`);
+  process.exit(1);
+}
+const REMOTE_ALLOWED = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.E2E_ALLOW_REMOTE || '').toLowerCase()
+);
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+const hostname = baseUrl.hostname.replace(/^\[|\]$/g, '');
+if (!LOCAL_HOSTS.has(hostname) && !REMOTE_ALLOWED) {
+  console.error(
+    `E2E recusou host remoto (${baseUrl.host}). ` +
+      'Use E2E_ALLOW_REMOTE=1 somente se o ambiente for descartável.'
+  );
+  process.exit(1);
+}
+
 const CHROME_CANDIDATES = [
   process.env.CHROME_PATH,
   'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -39,7 +59,13 @@ fs.writeFileSync(
 
 const errors = [];
 const failed = [];
+const createdRouteIds = new Set();
 let authToken = '';
+let passwordMoved = false;
+
+function trackRoute(id) {
+  if (id) createdRouteIds.add(id);
+}
 
 function log(msg) { console.log(msg); }
 function shot(name) { return path.join(OUT, name); }
@@ -63,18 +89,28 @@ async function api(pathname, { method = 'GET', body, auth = true } = {}) {
   return data;
 }
 
-async function expectApiError(promiseFactory, status, label) {
+async function expectApiError(promiseFactory, status, label, code = null) {
   try {
     await promiseFactory();
-    log(`   FAIL ${label}: esperava erro ${status}, veio sucesso`);
   } catch (err) {
-    log(`   ${err.status === status ? 'ok  ' : 'FAIL'} ${label}: ${err.status} ${err.data?.code || ''}`);
+    const ok = err.status === status && (!code || err.data?.code === code);
+    log(`   ${ok ? 'ok  ' : 'FAIL'} ${label}: ${err.status} ${err.data?.code || ''}`);
+    if (!ok) {
+      throw new Error(
+        `${label}: esperava ${status}${code ? '/' + code : ''}, veio ${err.status}/${err.data?.code || ''}`
+      );
+    }
+    return;
   }
+  throw new Error(`${label}: esperava erro ${status}, veio sucesso`);
 }
 
 function attach(page, label) {
   page.on('console', (msg) => {
-    if (msg.type() === 'error') errors.push(`[${label}] console: ${msg.text()}`);
+    if (msg.type() !== 'error') return;
+    const text = msg.text();
+    if (/tile\.openstreetmap\.org/i.test(text)) return;
+    errors.push(`[${label}] console: ${text}`);
   });
   page.on('pageerror', (err) => errors.push(`[${label}] pageerror: ${err.message}`));
   page.on('requestfailed', (req) => {
@@ -88,6 +124,69 @@ async function waitToast(page, text, timeout = 30000) {
   const toast = page.locator('.toast', { hasText: text }).first();
   await toast.waitFor({ state: 'visible', timeout });
   return (await toast.textContent()).trim();
+}
+
+async function loginWith(password) {
+  return api('/api/login', { method: 'POST', body: { password }, auth: false });
+}
+
+async function cleanup() {
+  log('\nCleanup');
+  if (!passwordMoved && createdRouteIds.size === 0) {
+    log('   nada a limpar');
+    return;
+  }
+
+  const candidates = passwordMoved ? [TEMP_PASSWORD, PASSWORD] : [PASSWORD, TEMP_PASSWORD];
+  let authenticated = false;
+  for (const candidate of candidates) {
+    let session;
+    try {
+      session = await loginWith(candidate);
+    } catch {
+      continue;
+    }
+    authToken = session.token;
+    if (candidate === TEMP_PASSWORD) {
+      try {
+        await api('/api/password', {
+          method: 'POST',
+          body: { currentPassword: TEMP_PASSWORD, newPassword: PASSWORD }
+        });
+        log('   senha restaurada');
+      } catch (err) {
+        log(`   FALHA ao restaurar senha: ${err.message}`);
+      }
+    }
+    passwordMoved = false;
+    authenticated = true;
+    break;
+  }
+  if (!authenticated) log('   não foi possível autenticar; usando token existente');
+
+  for (const id of createdRouteIds) {
+    try {
+      // Pedidos em rota impedem a exclusão da rota: desfaça até liberar.
+      const detail = await api(`/api/routes/${id}`);
+      const token = detail.route?.token;
+      if (token) {
+        for (let attempt = 0; attempt < 20; attempt++) {
+          const live = await api(`/api/rota/${token}`, { auth: false });
+          const active = (live.orders || []).find((o) => o.status === 'en_route');
+          if (!active) break;
+          await api(`/api/rota/${token}/orders/${active.id}/undo`, {
+            method: 'POST',
+            auth: false
+          });
+        }
+      }
+      await api(`/api/routes/${id}`, { method: 'DELETE' });
+      log(`   rota removida: ${id}`);
+    } catch (err) {
+      if (err.status === 404) log(`   rota já removida: ${id}`);
+      else log(`   FALHA ao remover rota ${id}: ${err.status || ''} ${err.message}`);
+    }
+  }
 }
 
 const browser = await chromium.launch({
@@ -146,6 +245,7 @@ try {
   await page.click('dialog .dialog__foot button:has-text("Criar rota")');
   await page.waitForURL(/#\/rota\/rt_/);
   const routeId = page.url().split('#/rota/')[1];
+  trackRoute(routeId);
   await page.waitForSelector('#route-map');
   await page.waitForTimeout(800);
   log('   route: ' + routeId);
@@ -410,6 +510,7 @@ try {
 
   log('11c. Entrega sem foto é recusada');
   const noPhotoRoute = await api('/api/routes', { method: 'POST', body: { name: 'Teste foto obrigatória' } });
+  trackRoute(noPhotoRoute.route.id);
   await api(`/api/routes/${noPhotoRoute.route.id}/orders`, {
     method: 'POST',
     body: { customer: 'Sem Foto', address: 'Rua das Trincheiras, 10, Centro, João Pessoa - PB' }
@@ -455,7 +556,14 @@ try {
   log(`   após desfazer: ${undoneRes.status} ${undoneData.code || ''}`);
   if (undoneRes.status !== 404) throw new Error('Desfazer entrega não apagou a foto');
 
+  // O primeiro desfazer volta para "em rota"; o segundo libera a rota para exclusão.
+  await fetch(
+    `${BASE}/api/rota/${noPhotoRoute.route.token}/orders/${noPhotoOrder.id}/undo`,
+    { method: 'POST' }
+  );
+
   await api(`/api/routes/${noPhotoRoute.route.id}`, { method: 'DELETE' });
+  createdRouteIds.delete(noPhotoRoute.route.id);
 
   log('12. Customer delivered');
   await customerPage.waitForFunction(
@@ -504,6 +612,7 @@ try {
   log('15. Geocode fallback pelo CEP');
   const fallbackCreated = await api('/api/routes', { method: 'POST', body: { name: 'Rota fallback CEP' } });
   const fallbackRouteId = fallbackCreated.route.id;
+  trackRoute(fallbackRouteId);
   await api(`/api/routes/${fallbackRouteId}/orders`, {
     method: 'POST',
     body: {
@@ -540,20 +649,150 @@ try {
   if (fallbackOrder.geocodeSource !== 'cep') throw new Error('Fallback pelo CEP não aplicado');
   await fallbackPage.unroute('https://nominatim.openstreetmap.org/search**');
   await api(`/api/routes/${fallbackRouteId}`, { method: 'DELETE' });
+  createdRouteIds.delete(fallbackRouteId);
   await fallbackPage.close();
 
-  log('16. Troca de senha (API)');
+  log('16. Invariantes de estado (API)');
+  const invCreated = await api('/api/routes', { method: 'POST', body: { name: 'Rota invariantes' } });
+  const invRouteId = invCreated.route.id;
+  const invToken = invCreated.route.token;
+  trackRoute(invRouteId);
+  await api(`/api/routes/${invRouteId}/orders`, {
+    method: 'POST',
+    body: {
+      orders: [
+        { customer: 'Invariante A', address: 'Rua A, 1, Centro, João Pessoa - PB' },
+        { customer: 'Invariante B', address: 'Rua B, 2, Centro, João Pessoa - PB' }
+      ]
+    }
+  });
+  let invDetail = await api(`/api/routes/${invRouteId}`);
+  let invOrders = invDetail.orders.filter((o) => o.kind !== 'branch');
+  const invCoords = [
+    { lat: -7.118, lng: -34.858 },
+    { lat: -7.132, lng: -34.872 }
+  ];
+  for (let i = 0; i < invOrders.length; i++) {
+    await api(`/api/orders/${invOrders[i].id}`, {
+      method: 'PATCH',
+      body: { ...invCoords[i], geocodeSource: 'manual' }
+    });
+  }
+
+  await api(`/api/routes/${invRouteId}/optimize`, { method: 'POST', body: {} });
+  invDetail = await api(`/api/routes/${invRouteId}`);
+  if (!invDetail.route.optimizedAt) throw new Error('Otimização não marcou optimizedAt');
+  if (invDetail.orders.some((o) => o.status !== 'canceled' && !o.seq)) {
+    throw new Error('Otimização não numerou todas as paradas');
+  }
+  log('   otimização ok: ' + invDetail.orders.map((o) => `${o.seq}=${o.customer}`).join(' | '));
+
+  await api(`/api/orders/${invOrders[0].id}`, { method: 'PATCH', body: { notes: 'plano muda' } });
+  invDetail = await api(`/api/routes/${invRouteId}`);
+  if (invDetail.route.optimizedAt !== null) throw new Error('Editar pedido não invalidou a otimização');
+  if (invDetail.orders.some((o) => o.seq !== null)) throw new Error('Editar pedido não limpou a sequência');
+  log('   plano invalidado após edição: optimizedAt=null seq=null');
+
+  await api(`/api/routes/${invRouteId}/optimize`, { method: 'POST', body: {} });
+  invDetail = await api(`/api/routes/${invRouteId}`);
+  invOrders = invDetail.orders.filter((o) => o.kind !== 'branch');
+  const invA = invOrders[0];
+  const invB = invOrders[1];
+
+  await api(`/api/rota/${invToken}/orders/${invA.id}/en-route`, { method: 'POST', auth: false });
+  await expectApiError(
+    () => api(`/api/orders/${invA.id}`, { method: 'PATCH', body: { notes: 'bloqueado' } }),
+    409,
+    'editar pedido em rota',
+    'order_locked'
+  );
+  await expectApiError(
+    () => api(`/api/orders/${invA.id}`, { method: 'DELETE' }),
+    409,
+    'excluir pedido em rota',
+    'order_locked'
+  );
+  await expectApiError(
+    () => api(`/api/routes/${invRouteId}/orders`, {
+      method: 'POST',
+      body: { customer: 'Invariante C', address: 'Rua C, 3, Centro, João Pessoa - PB' }
+    }),
+    409,
+    'adicionar pedido com entrega ativa',
+    'active_delivery'
+  );
+  await expectApiError(
+    () => api(`/api/rota/${invToken}/orders/${invB.id}/en-route`, { method: 'POST', auth: false }),
+    409,
+    'segunda entrega ativa',
+    'active_delivery'
+  );
+  await expectApiError(
+    () => api(`/api/routes/${invRouteId}`, { method: 'DELETE' }),
+    409,
+    'excluir rota com entrega ativa',
+    'active_delivery'
+  );
+
+  const invPage = await context.newPage();
+  attach(invPage, 'invariantes');
+  await invPage.goto(`${BASE}/painel#/rota/${invRouteId}`, { waitUntil: 'networkidle' });
+  await invPage.waitForSelector('#stop-list .stop-row', { timeout: 20000 });
+  const uiState = await invPage.evaluate(() => ({
+    add: document.querySelector('#add-orders-btn')?.disabled,
+    optimize: document.querySelector('#optimize-btn')?.disabled,
+    remove: document.querySelector('#delete-route-btn')?.disabled,
+    editable: document.querySelectorAll(
+      '#stop-list [data-action="edit-order"], #stop-list [data-action="delete-order"], #stop-list [data-action="pin-order"]'
+    ).length
+  }));
+  log(`   painel bloqueado: add=${uiState.add} optimize=${uiState.optimize} excluir=${uiState.remove} edicoes=${uiState.editable}`);
+  if (!uiState.add || !uiState.optimize || !uiState.remove || uiState.editable !== 0) {
+    throw new Error('Painel não bloqueou as ações durante a entrega ativa');
+  }
+  await invPage.close();
+
+  await api(`/api/rota/${invToken}/orders/${invA.id}/undo`, { method: 'POST', auth: false });
+  const invPhoto = 'data:image/png;base64,' + fs.readFileSync(PHOTO_FILE).toString('base64');
+  await api(`/api/rota/${invToken}/orders/${invA.id}/deliver`, {
+    method: 'POST',
+    auth: false,
+    body: { photo: invPhoto }
+  });
+  await expectApiError(
+    () => api(`/api/orders/${invA.id}`, { method: 'PATCH', body: { notes: 'bloqueado' } }),
+    409,
+    'editar pedido entregue',
+    'order_locked'
+  );
+  await expectApiError(
+    () => api(`/api/orders/${invA.id}`, { method: 'DELETE' }),
+    409,
+    'excluir pedido entregue',
+    'order_locked'
+  );
+
+  await api(`/api/rota/${invToken}/orders/${invA.id}/undo`, { method: 'POST', auth: false });
+  await api(`/api/rota/${invToken}/orders/${invA.id}/undo`, { method: 'POST', auth: false });
+  await api(`/api/routes/${invRouteId}`, { method: 'DELETE' });
+  createdRouteIds.delete(invRouteId);
+  log('   rota de invariantes removida');
+
+  log('17. Troca de senha (API)');
   await api('/api/password', { method: 'POST', body: { currentPassword: PASSWORD, newPassword: TEMP_PASSWORD } });
+  passwordMoved = true;
   const relogin = await api('/api/login', { method: 'POST', body: { password: TEMP_PASSWORD }, auth: false });
   log('   login com senha nova ok: ' + Boolean(relogin.token));
   authToken = relogin.token;
   await api('/api/password', { method: 'POST', body: { currentPassword: TEMP_PASSWORD, newPassword: PASSWORD } });
+  passwordMoved = false;
   const relogin2 = await api('/api/login', { method: 'POST', body: { password: PASSWORD }, auth: false });
   log('   senha restaurada: ' + Boolean(relogin2.token));
   authToken = relogin2.token;
 
-  log('17. Cleanup test route');
+  log('18. Cleanup test route');
   await api(`/api/routes/${routeId}`, { method: 'DELETE' });
+  createdRouteIds.delete(routeId);
   log('   deleted');
 
   log('\nCONSOLE ERRORS (' + errors.length + ')');
@@ -561,10 +800,16 @@ try {
   log('\nFAILED REQUESTS (' + failed.length + ')');
   for (const f of failed) log('  ' + f);
   log('\nOUT: ' + OUT);
+  if (errors.length || failed.length) {
+    throw new Error(
+      `${errors.length} erro(s) de console e ${failed.length} requisição(ões) falharam`
+    );
+  }
 } catch (err) {
   console.error('E2E FAILED:', err);
   try { await page.screenshot({ path: shot('99-failure.png'), fullPage: true }); } catch {}
   process.exitCode = 1;
 } finally {
+  await cleanup();
   await browser.close();
 }

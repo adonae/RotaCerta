@@ -340,7 +340,7 @@ function renderRouteDetail() {
       </div>
       <div class="detail-head__actions">
         <button class="btn btn--outline" type="button" data-action="share-route">${icon('link')} Link do motoboy</button>
-        <button class="btn btn--outline" type="button" data-action="add-orders">${icon('plus')} Pedidos</button>
+        <button class="btn btn--outline" type="button" data-action="add-orders" id="add-orders-btn">${icon('plus')} Pedidos</button>
         <button class="btn btn--primary" type="button" data-action="optimize" id="optimize-btn">${icon('sparkles')} ${optimizeLabel}</button>
       </div>
     </div>
@@ -395,7 +395,7 @@ function renderRouteDetail() {
 
         <div class="card">
           <div class="card__body row">
-            <button class="btn btn--danger btn--sm" type="button" data-action="delete-route">${icon('trash')} Excluir rota</button>
+            <button class="btn btn--danger btn--sm" type="button" data-action="delete-route" id="delete-route-btn">${icon('trash')} Excluir rota</button>
             <div class="spacer"></div>
             <span class="small muted" id="detail-foot-count">${total} pedido${total === 1 ? '' : 's'}</span>
           </div>
@@ -421,6 +421,15 @@ function updateRouteLive() {
   if (statusEl) statusEl.innerHTML = routeStatusChip(route.status);
   const countEl = $('#detail-count');
   if (countEl) countEl.textContent = `${total} parada${total === 1 ? '' : 's'}`;
+
+  const planLocked = Boolean(active);
+  const lockTitle = 'Finalize a entrega em andamento para alterar a rota.';
+  for (const id of ['add-orders-btn', 'optimize-btn', 'delete-route-btn']) {
+    const btn = doc(id);
+    if (!btn) continue;
+    btn.disabled = planLocked;
+    btn.title = planLocked ? lockTitle : '';
+  }
 
   const stats = $('#detail-stats');
   if (stats) {
@@ -538,15 +547,18 @@ function stopRowHtml(order, index, active) {
     ? [
         `<a class="btn btn--icon" href="${esc(mapsLink(order))}" target="_blank" rel="noopener" title="Abrir endereço no Google Maps" aria-label="Abrir no mapa">${icon('navigation')}</a>`
       ].join('')
-    : [
-        order.hasPhoto ? `<button class="btn btn--icon" type="button" data-action="view-photo" data-id="${esc(order.id)}" title="Ver foto da entrega" aria-label="Ver foto da entrega">${icon('camera')}</button>` : '',
-        `<button class="btn btn--icon" type="button" data-action="copy-order-link" data-id="${esc(order.id)}" title="Copiar link do cliente" aria-label="Copiar link do cliente">${icon('link')}</button>`,
-        wa ? `<a class="btn btn--icon" href="${esc(wa)}" target="_blank" rel="noopener" title="Enviar link no WhatsApp" aria-label="Enviar link no WhatsApp">${icon('whatsapp')}</a>` : '',
-        `<a class="btn btn--icon" href="${esc(mapsLink(order))}" target="_blank" rel="noopener" title="Abrir endereço no Google Maps" aria-label="Abrir no mapa">${icon('navigation')}</a>`,
-        `<button class="btn btn--icon ${missing ? 'btn--soft' : ''}" type="button" data-action="pin-order" data-id="${esc(order.id)}" title="Ajustar localização no mapa" aria-label="Ajustar localização">${icon('mapPin')}</button>`,
-        `<button class="btn btn--icon" type="button" data-action="edit-order" data-id="${esc(order.id)}" title="Editar pedido" aria-label="Editar pedido">${icon('edit')}</button>`,
-        `<button class="btn btn--icon is-danger" type="button" data-action="delete-order" data-id="${esc(order.id)}" title="Excluir pedido" aria-label="Excluir pedido">${icon('trash')}</button>`
-      ].filter(Boolean).join('');
+    : (() => {
+        const canEdit = !active && order.status === 'pending';
+        return [
+          order.hasPhoto ? `<button class="btn btn--icon" type="button" data-action="view-photo" data-id="${esc(order.id)}" title="Ver foto da entrega" aria-label="Ver foto da entrega">${icon('camera')}</button>` : '',
+          `<button class="btn btn--icon" type="button" data-action="copy-order-link" data-id="${esc(order.id)}" title="Copiar link do cliente" aria-label="Copiar link do cliente">${icon('link')}</button>`,
+          wa ? `<a class="btn btn--icon" href="${esc(wa)}" target="_blank" rel="noopener" title="Enviar link no WhatsApp" aria-label="Enviar link no WhatsApp">${icon('whatsapp')}</a>` : '',
+          `<a class="btn btn--icon" href="${esc(mapsLink(order))}" target="_blank" rel="noopener" title="Abrir endereço no Google Maps" aria-label="Abrir no mapa">${icon('navigation')}</a>`,
+          canEdit ? `<button class="btn btn--icon ${missing ? 'btn--soft' : ''}" type="button" data-action="pin-order" data-id="${esc(order.id)}" title="Ajustar localização no mapa" aria-label="Ajustar localização">${icon('mapPin')}</button>` : '',
+          canEdit ? `<button class="btn btn--icon" type="button" data-action="edit-order" data-id="${esc(order.id)}" title="Editar pedido" aria-label="Editar pedido">${icon('edit')}</button>` : '',
+          canEdit ? `<button class="btn btn--icon is-danger" type="button" data-action="delete-order" data-id="${esc(order.id)}" title="Excluir pedido" aria-label="Excluir pedido">${icon('trash')}</button>` : ''
+        ].filter(Boolean).join('');
+      })();
 
   return `
     <div class="${classes}" id="stop-${esc(order.id)}" data-order-id="${esc(order.id)}">

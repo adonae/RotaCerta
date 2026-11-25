@@ -152,7 +152,14 @@ export async function ensurePassword(env) {
       isDefault: settings.password_is_default === '1'
     };
   }
-  const initial = String(env.ADMIN_PASSWORD || 'rotacerta');
+  const initial = String(env.ADMIN_PASSWORD ?? '');
+  if (!initial.trim()) {
+    throw new HttpError(
+      503,
+      'Painel não configurado: defina o segredo ADMIN_PASSWORD antes do primeiro login.',
+      'admin_password_missing'
+    );
+  }
   const hash = await hashPassword(initial);
   await setSetting(env, 'password_hash', hash);
   await setSetting(env, 'password_is_default', '1');
@@ -358,6 +365,22 @@ export async function optimizeTrip(start, points) {
 }
 
 /* -------------------------------- rotas ------------------------------ */
+
+export async function invalidatePlan(env, routeId) {
+  const now = nowIso();
+  await batch(env, [
+    env.DB.prepare(
+      `UPDATE routes SET
+         distance_m = NULL, duration_s = NULL, geometry = NULL,
+         geometry_source = NULL, optimized_at = NULL, updated_at = ?
+       WHERE id = ?`
+    ).bind(now, routeId),
+    env.DB.prepare(
+      'UPDATE orders SET seq = NULL, updated_at = ? WHERE route_id = ? AND seq IS NOT NULL'
+    ).bind(now, routeId)
+  ]);
+  await recalcRouteStatus(env, routeId);
+}
 
 export async function recalcRouteStatus(env, routeId) {
   const row = await first(

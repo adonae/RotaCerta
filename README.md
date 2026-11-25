@@ -133,6 +133,7 @@ npm run deploy
 - Se o endereço completo não existir no mapa (rua com nome diferente, por exemplo), o sistema tenta o **CEP** no Nominatim e, se ainda falhar, usa a **AwesomeAPI CEP**. O pedido fica marcado como **Aproximada (CEP)** para conferência do pino.
 - **ViaCEP** (com fallback para **BrasilAPI**) preenche rua, bairro e cidade a partir do CEP digitado no pedido. Basta informar o número para completar o endereço.
 - **OSRM** calcula a ordem por ruas no Worker. Se o serviço falhar, o sistema usa uma estimativa por distância e avisa no painel.
+- O **Leaflet 1.9.4** é servido localmente em `public/assets/vendor/leaflet` (com os ícones), sem CDN. A CSP não permite scripts de terceiros.
 - Alguns números de casa não existem no OpenStreetMap. Nesse caso, use **Ajustar no mapa** no pedido para posicionar o pino manualmente.
 - A rota sempre começa no endereço de retirada configurado (padrão: Avenida Tabajaras, 848, João Pessoa/PB).
 
@@ -141,7 +142,7 @@ npm run deploy
 - Ao concluir uma entrega, o motoboy precisa bater uma foto do local. A foto é comprimida no celular antes do envio (máximo ~1440 px, JPEG).
 - A loja vê a foto pelo ícone de câmera na parada entregue do painel.
 - As imagens ficam no **Cloudflare KV** (`PHOTOS`) e expiram automaticamente em **3 dias** (`expirationTtl`). O banco D1 guarda apenas a referência da foto.
-- Desfazer uma entrega apaga a foto correspondente. Excluir o pedido ou a rota também remove as fotos.
+- Desfazer uma entrega apaga a foto correspondente. Ao excluir a rota inteira, as fotos restantes saem pela expiração automática do KV (em até 3 dias).
 - O link do cliente não mostra a foto; ela é visível apenas no painel da loja.
 
 ## Filiais na rota
@@ -163,7 +164,10 @@ Toda rota inclui automaticamente duas paradas fixas, além do ponto de retirada:
 
 - Cada rota tem um token aleatório para o motoboy e cada pedido tem um token aleatório para o cliente.
 - O painel usa senha com hash PBKDF2 e sessões de 30 dias.
-- O servidor permite **uma entrega “Em rota” por vez**; a segunda tentativa retorna erro e a interface orienta a finalizar a atual.
+- O servidor permite **uma entrega “Em rota” por vez**; a segunda tentativa retorna erro e a interface orienta a finalizar a atual. A transição é condicional no banco, então dois cliques simultâneos não abrem duas entregas.
+- Pedidos **em rota** ou **entregues** não podem ser editados nem excluídos, e a rota não pode ser excluída enquanto houver entrega ativa.
+- Adicionar, editar ou excluir pedidos invalida o plano: a sequência e a otimização são limpas e o painel pede um novo cálculo.
+- Durante uma entrega ativa, os botões de adicionar, otimizar e excluir rota ficam bloqueados no painel.
 - As duas paradas das filiais são fixas em toda rota, participam da otimização e não precisam de foto ao serem concluídas.
 - A conclusão exige foto apenas para entregas de clientes; filiais usam **Concluir parada**.
 - O mapa do cliente só recebe a posição do entregador enquanto o pedido dele está em rota.
@@ -171,20 +175,21 @@ Toda rota inclui automaticamente duas paradas fixas, além do ponto de retirada:
 - A posição do motoboy é enviada a cada ~8 segundos enquanto houver entrega ativa e a página estiver aberta.
 - A conclusão da entrega exige foto e o servidor recusa a requisição sem ela.
 - As fotos de entrega expiram em 3 dias no KV; referências antigas deixam de aparecer no painel.
-- O sistema usa *polling*: o cliente atualiza a cada 4 segundos em rota; o painel, a cada 10 segundos.
+- O sistema usa *polling*: o cliente atualiza a cada 4 segundos em rota e a cada 60 segundos depois de entregue (para refletir um eventual desfazer); o painel, a cada 10 segundos.
 
 ## Segurança e privacidade
 
 - Nunca compartilhe o link do motoboy com clientes: ele mostra todas as paradas.
 - O link do cliente mostra apenas o próprio pedido, o nome do entregador e a posição durante a entrega.
-- Troque a senha inicial antes de usar em produção.
+- Defina `ADMIN_PASSWORD` antes do primeiro login e troque a senha inicial antes de usar em produção. Sem hash no banco e sem o segredo, o login responde **503** em vez de usar uma senha padrão.
 - Para recuperar o acesso caso esqueça a senha:
   - redefina `ADMIN_PASSWORD` com `npx wrangler secret put ADMIN_PASSWORD`; e
   - apague o hash salvo no banco:
     ```bash
-    npx wrangler d1 execute DB --remote --command "UPDATE settings SET value='' WHERE key='password_hash'; UPDATE settings SET value='1' WHERE key='password_is_default';"
+    npx wrangler d1 execute DB --remote --command "UPDATE settings SET value='' WHERE key='password_hash'"
+    npx wrangler d1 execute DB --remote --command "UPDATE settings SET value='1' WHERE key='password_is_default'"
     ```
-  - no próximo login, a senha do segredo será aplicada novamente.
+  - no próximo login, a senha do segredo será aplicada novamente. Se o segredo não estiver definido, o login continua retornando 503.
 
 ## Limites do plano gratuito
 
